@@ -1,0 +1,18 @@
+[package]
+name = "nuck-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "Shared Nuck protocol types: space.nuck.* events, /_nuck/v1 DTOs, and permissions (ADRs 0014, 0020, 0027)"
+
+[dependencies]
+# Matrix protocol types (ADR 0004). `events` provides custom event content macros.
+ruma = { version = "0.17", features = ["events"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[lints.rust]
+# ruma's event derive emits `#[cfg(ruma_unstable_exhaustive_types)]`; declare it so
+# our crate doesn't warn about an unexpected cfg.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(ruma_unstable_exhaustive_types)"] }
