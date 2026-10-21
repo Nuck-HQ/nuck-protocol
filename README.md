@@ -42,5 +42,5 @@ The concrete protocol specification — the `space.nuck.*` event registry and th
 
 ```toml
 [dependencies]
-nuck-protocol = { git = "https://github.com/nuck-hq/nuck-protocol.git", tag = "v0.1.0" }
+nuck-protocol = { git = "https://github.com/nuck-hq/nuck-protocol.git", tag = "v0.2.0" }
 ```

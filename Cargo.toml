@@ -1,6 +1,6 @@
 [package]
 name = "nuck-protocol"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Shared Nuck protocol types: space.nuck.* events, /_nuck/v1 DTOs, and permissions (ADRs 0014, 0020, 0027)"
 

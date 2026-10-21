@@ -4,7 +4,7 @@ Notable changes to `nuck-protocol`. The **crate version** is packaging and Rust 
 the **protocol version** is the wire version negotiated via `/_nuck/v1/server-info`
 (ADR 0026). Only breaking wire changes move the protocol version.
 
-## Unreleased
+## v0.2.0 — 2026-10-22
 
 - Finalized the permission table (ADR 0042): added the four declared-but-undocumented
   permissions (`PRIORITY_SPEAKER`, `STREAM`, `SEND_TTS_MESSAGES`, `USE_EXTERNAL_EMOJIS`)
