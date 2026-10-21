@@ -154,6 +154,28 @@ pub enum JoinRequestStatus {
     Denied,
 }
 
+/// `space.nuck.emoji.v1` — a custom emoji, keyed by emoji name (ADR 0023).
+#[derive(Clone, Debug, Deserialize, Serialize, EventContent)]
+#[ruma_event(type = "space.nuck.emoji.v1", kind = State, state_key_type = String)]
+pub struct EmojiEventContent {
+    /// The emoji image, as an `mxc://` URI.
+    pub image: String,
+    /// The user who uploaded it.
+    pub uploaded_by: OwnedUserId,
+}
+
+/// `space.nuck.sticker.v1` — a custom sticker, keyed by sticker ID (ADR 0023).
+#[derive(Clone, Debug, Deserialize, Serialize, EventContent)]
+#[ruma_event(type = "space.nuck.sticker.v1", kind = State, state_key_type = String)]
+pub struct StickerEventContent {
+    /// The sticker image, as an `mxc://` URI.
+    pub image: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The user who uploaded it.
+    pub uploaded_by: OwnedUserId,
+}
+
 // --- Channel room state (ADR 0005/0020) ------------------------------------
 
 /// `space.nuck.override.v1` — a per-channel permission override, keyed by role ID
@@ -176,6 +198,45 @@ pub struct EmbedEventContent {
     pub url: Option<String>,
     /// RGB color, `0xRRGGBB`.
     pub color: Option<u32>,
+}
+
+/// What kind of app interaction this is (ADR 0018).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractionKind {
+    /// A slash command was invoked.
+    Command,
+    /// A message component (button / select menu) was used.
+    Component,
+    /// A modal was submitted.
+    ModalSubmit,
+}
+
+/// `space.nuck.interaction.v1` — a slash-command invocation or component/modal
+/// interaction, delivered to the app over the gateway (ADR 0018/0023).
+///
+/// Message-like: it records that an interaction happened; it is not room state. The
+/// app is named by `app_id`; `command`/`args` describe a command invocation, and
+/// `custom_id`/`values` a component or modal submission.
+#[derive(Clone, Debug, Deserialize, Serialize, EventContent)]
+#[ruma_event(type = "space.nuck.interaction.v1", kind = MessageLike)]
+pub struct InteractionEventContent {
+    /// The app (bot) the interaction targets.
+    pub app_id: String,
+    pub kind: InteractionKind,
+    /// The invoked command name, for [`InteractionKind::Command`].
+    #[serde(default)]
+    pub command: Option<String>,
+    /// Parsed command arguments, for [`InteractionKind::Command`].
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
+    /// The component `custom_id`, for [`InteractionKind::Component`] and
+    /// [`InteractionKind::ModalSubmit`].
+    #[serde(default)]
+    pub custom_id: Option<String>,
+    /// Selected option values, for [`InteractionKind::Component`].
+    #[serde(default)]
+    pub values: Option<Vec<String>>,
 }
 
 // --- To-device events (ADR 0030) -------------------------------------------

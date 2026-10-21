@@ -7,6 +7,16 @@
 
 use serde::{Deserialize, Serialize};
 
+/// The lowest bit reserved for Nuck-specific extension permissions (ADR 0020).
+///
+/// Bits `56..=63` are reserved: `56..=59` are assigned to named extensions, `60..=63`
+/// are reserved and unassigned. Discord-aligned permissions never occupy these bits.
+pub const NUCK_EXTENSION_BIT_MIN: u32 = 56;
+
+/// The highest reserved bit (inclusive).
+pub const NUCK_EXTENSION_BIT_MAX: u32 = 63;
+
+
 /// A Nuck permission bitfield.
 ///
 /// Serialized as a plain `u64`. High bits (56..=63) are reserved for Nuck
@@ -126,16 +136,26 @@ impl std::ops::BitOr for Permissions {
     }
 }
 
-/// A single documented permission: its name, bit, and the **power level a member
-/// must hold to exercise it**. The table is the canonical bit assignment and is
-/// versioned protocol (ADR 0014/0020).
+/// A single documented permission: its name, bit, and its **ordering level**.
+///
+/// The table is the canonical bit assignment — a **versioned protocol commitment**
+/// (ADR 0014/0020). Add entries at the end; never change an existing entry's bit or
+/// meaning.
 #[derive(Clone, Copy, Debug)]
 pub struct PermissionDef {
     /// Stable machine name (used in audit logs, docs, and bot APIs).
     pub name: &'static str,
     /// The bit.
     pub permission: Permissions,
-    /// Power level required to exercise this permission (used by [`mirror`]).
+    /// The level a member is treated as holding this permission *at*.
+    ///
+    /// This is **not** a substrate mapping and **not** an enforcement threshold: since
+    /// ADR 0041 all fine-grained authorization is computed by [`crate::authorization`]
+    /// from role membership, and the substrate sees only the coarse
+    /// [`coarse_power_levels`]. It survives as (a) the ordering fed to
+    /// [`effective_level`] and (b) documented metadata for the legacy fine-grained
+    /// mirror (ADR 0040), which is kept only to explain why mirroring is not the
+    /// enforcement path.
     pub required_level: i64,
 }
 
@@ -150,13 +170,17 @@ pub const PERMISSION_TABLE: &[PermissionDef] = &[
     PermissionDef { name: "MANAGE_GUILD", permission: Permissions::MANAGE_GUILD, required_level: 50 },
     PermissionDef { name: "ADD_REACTIONS", permission: Permissions::ADD_REACTIONS, required_level: 0 },
     PermissionDef { name: "VIEW_AUDIT_LOG", permission: Permissions::VIEW_AUDIT_LOG, required_level: 50 },
+    PermissionDef { name: "PRIORITY_SPEAKER", permission: Permissions::PRIORITY_SPEAKER, required_level: 0 },
+    PermissionDef { name: "STREAM", permission: Permissions::STREAM, required_level: 0 },
     PermissionDef { name: "VIEW_CHANNEL", permission: Permissions::VIEW_CHANNEL, required_level: 0 },
     PermissionDef { name: "SEND_MESSAGES", permission: Permissions::SEND_MESSAGES, required_level: 0 },
+    PermissionDef { name: "SEND_TTS_MESSAGES", permission: Permissions::SEND_TTS_MESSAGES, required_level: 0 },
     PermissionDef { name: "MANAGE_MESSAGES", permission: Permissions::MANAGE_MESSAGES, required_level: 50 },
     PermissionDef { name: "EMBED_LINKS", permission: Permissions::EMBED_LINKS, required_level: 0 },
     PermissionDef { name: "ATTACH_FILES", permission: Permissions::ATTACH_FILES, required_level: 0 },
     PermissionDef { name: "READ_MESSAGE_HISTORY", permission: Permissions::READ_MESSAGE_HISTORY, required_level: 0 },
     PermissionDef { name: "MENTION_EVERYONE", permission: Permissions::MENTION_EVERYONE, required_level: 50 },
+    PermissionDef { name: "USE_EXTERNAL_EMOJIS", permission: Permissions::USE_EXTERNAL_EMOJIS, required_level: 0 },
     PermissionDef { name: "CONNECT", permission: Permissions::CONNECT, required_level: 0 },
     PermissionDef { name: "SPEAK", permission: Permissions::SPEAK, required_level: 0 },
     PermissionDef { name: "MUTE_MEMBERS", permission: Permissions::MUTE_MEMBERS, required_level: 50 },
@@ -183,11 +207,14 @@ pub const PERMISSION_TABLE: &[PermissionDef] = &[
     PermissionDef { name: "MANAGE_VOICE_CHANNELS", permission: Permissions::MANAGE_VOICE_CHANNELS, required_level: 50 },
 ];
 
-/// The standard `m.room.power_levels` thresholds derived from a permission set.
+/// The standard `m.room.power_levels` thresholds a room carries.
 ///
-/// This is the **mirror** that makes Nuck permissions substrate-enforceable under
-/// federation (ADR 0006/0020). It is a versioned protocol commitment: changing the
-/// mapping is a breaking change.
+/// **This is not a fine-grained permission mirror.** ADR 0040 showed that a scalar
+/// power level cannot represent an arbitrary permission set (it over-grants for
+/// non-level-closed sets and only covers six actions), so ADR 0041 moved all
+/// fine-grained authorization into nuck-server. Rooms are written with the *coarse*
+/// [`coarse_power_levels`] — members vs. the action bot — and [`mirror`] / [`Action`]
+/// below are retained only to document that finding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PowerLevelsMirror {
     pub users_default: i64,
@@ -199,9 +226,14 @@ pub struct PowerLevelsMirror {
     pub redact: i64,
 }
 
-/// Compute the mirrored power levels for a member holding `permissions`.
+/// Compute fine-grained power levels for a member holding `permissions`.
 ///
-/// The *inverse* direction — a member's effective power level — is the maximum
+/// **Legacy — not an enforcement path (ADR 0040/0041).** A scalar power level cannot
+/// mirror an arbitrary permission set; this is kept as the evidence for that finding
+/// and to drive the `mirror_invariant` tests. Rooms are written with
+/// [`coarse_power_levels`] instead.
+///
+/// The *inverse* direction — a member's effective level — is the maximum
 /// `required_level` over the permissions they hold (see [`effective_level`]).
 #[must_use]
 pub fn mirror(permissions: Permissions) -> PowerLevelsMirror {
@@ -239,12 +271,13 @@ pub fn effective_level(permissions: Permissions) -> i64 {
         .unwrap_or(0)
 }
 
-/// A **substrate-enforceable action**: one that can be expressed as a Matrix
-/// power-level threshold (ADR 0020).
+/// A substrate-enforceable action: one expressible as a Matrix power-level threshold.
 ///
-/// Actions *not* listed here (reactions, attachments, viewing, voice connect/speak)
-/// cannot be expressed as room power levels and are enforced by nuck-server only —
-/// see the finding in ADR 0040.
+/// **Legacy — not an enforcement path (ADR 0040/0041).** Only these six actions can be
+/// expressed as room power levels at all, and even they over-grant for non-level-closed
+/// sets. This enum exists to document that finding and to drive the `mirror_invariant`
+/// tests. Everything else — reactions, attachments, viewing, voice connect/speak, and
+/// every fine-grained permission — is enforced by nuck-server (ADR 0041).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Ban,
@@ -363,6 +396,113 @@ mod tests {
         for def in PERMISSION_TABLE {
             assert_eq!(seen & def.permission.bits(), 0, "duplicate bit for {}", def.name);
             seen |= def.permission.bits();
+        }
+    }
+
+    /// Every named permission bit declared on [`Permissions`].
+    ///
+    /// Deliberately written out rather than derived: adding a permission bit without a
+    /// [`PERMISSION_TABLE`] entry — or an entry without a declared bit — must fail the
+    /// registry tests below. This is what keeps the table the single documented
+    /// commitment (ADR 0020).
+    const NAMED_PERMISSIONS: &[Permissions] = &[
+        Permissions::CREATE_INSTANT_INVITE,
+        Permissions::KICK_MEMBERS,
+        Permissions::BAN_MEMBERS,
+        Permissions::ADMINISTRATOR,
+        Permissions::MANAGE_CHANNELS,
+        Permissions::MANAGE_GUILD,
+        Permissions::ADD_REACTIONS,
+        Permissions::VIEW_AUDIT_LOG,
+        Permissions::PRIORITY_SPEAKER,
+        Permissions::STREAM,
+        Permissions::VIEW_CHANNEL,
+        Permissions::SEND_MESSAGES,
+        Permissions::SEND_TTS_MESSAGES,
+        Permissions::MANAGE_MESSAGES,
+        Permissions::EMBED_LINKS,
+        Permissions::ATTACH_FILES,
+        Permissions::READ_MESSAGE_HISTORY,
+        Permissions::MENTION_EVERYONE,
+        Permissions::USE_EXTERNAL_EMOJIS,
+        Permissions::CONNECT,
+        Permissions::SPEAK,
+        Permissions::MUTE_MEMBERS,
+        Permissions::DEAFEN_MEMBERS,
+        Permissions::MOVE_MEMBERS,
+        Permissions::CHANGE_NICKNAME,
+        Permissions::MANAGE_NICKNAMES,
+        Permissions::MANAGE_ROLES,
+        Permissions::MANAGE_WEBHOOKS,
+        Permissions::MANAGE_GUILD_EXPRESSIONS,
+        Permissions::USE_APPLICATION_COMMANDS,
+        Permissions::MANAGE_EVENTS,
+        Permissions::MANAGE_THREADS,
+        Permissions::CREATE_PUBLIC_THREADS,
+        Permissions::CREATE_PRIVATE_THREADS,
+        Permissions::USE_EXTERNAL_STICKERS,
+        Permissions::SEND_MESSAGES_IN_THREADS,
+        Permissions::MODERATE_MEMBERS,
+        Permissions::SEND_VOICE_MESSAGES,
+        Permissions::MANAGE_FEDERATION,
+        Permissions::MANAGE_BOTS,
+        Permissions::MANAGE_DIRECTORY_LISTING,
+        Permissions::MANAGE_VOICE_CHANNELS,
+    ];
+
+    #[test]
+    fn every_named_permission_is_in_the_table() {
+        for bit in NAMED_PERMISSIONS {
+            assert!(
+                PERMISSION_TABLE.iter().any(|d| d.permission == *bit),
+                "bit {:#x} is declared on Permissions but missing from PERMISSION_TABLE",
+                bit.bits()
+            );
+        }
+    }
+
+    #[test]
+    fn the_table_has_no_undeclared_bits() {
+        for def in PERMISSION_TABLE {
+            assert!(
+                NAMED_PERMISSIONS.contains(&def.permission),
+                "{} is in PERMISSION_TABLE but not declared on Permissions",
+                def.name
+            );
+        }
+    }
+
+    #[test]
+    fn table_names_are_unique() {
+        let mut names: Vec<&str> = PERMISSION_TABLE.iter().map(|d| d.name).collect();
+        let count = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), count, "duplicate name in PERMISSION_TABLE");
+    }
+
+    #[test]
+    fn every_table_entry_is_a_single_bit_in_range() {
+        for def in PERMISSION_TABLE {
+            let bits = def.permission.bits();
+            assert_eq!(bits.count_ones(), 1, "{} is not a single bit", def.name);
+            assert!(bits.trailing_zeros() < 64, "{} has an out-of-range bit", def.name);
+        }
+    }
+
+    #[test]
+    fn nuck_extensions_live_in_the_reserved_range() {
+        for bit in [
+            Permissions::MANAGE_FEDERATION,
+            Permissions::MANAGE_BOTS,
+            Permissions::MANAGE_DIRECTORY_LISTING,
+            Permissions::MANAGE_VOICE_CHANNELS,
+        ] {
+            let index = bit.bits().trailing_zeros();
+            assert!(
+                (NUCK_EXTENSION_BIT_MIN..=NUCK_EXTENSION_BIT_MAX).contains(&index),
+                "extension bit {index} is outside the reserved range 56..=63"
+            );
         }
     }
 }
